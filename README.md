@@ -103,7 +103,7 @@ Explicación política por política en [docs/rls.md](docs/rls.md).
 
 | Qué | Cómo |
 |---|---|
-| Migraciones aplican limpias y en orden | `npm test` las aplica todas desde cero en cada archivo de pruebas |
+| Migraciones aplican limpias y en orden | `npm test` las aplica todas desde cero en cada archivo de pruebas, sobre **PostgreSQL 17** (misma versión mayor que Supabase) |
 | Reglas de negocio | Casos del PRD como pruebas: `CP-KDX-01` (42 + 96 − 130 = 8), `CP-KDX-02` (costo 40.67), `CP-EXI-02`, `CP-ALM-01`, `CP-COD-02/03`… |
 | RLS | Cada prueba entra con el rol `authenticated` y el JWT del usuario, igual que una petición real. Meta-pruebas: toda tabla con RLS, toda vista `security_invoker`, toda función definer con `search_path` |
 | Las pruebas detectan errores | Prueba de mutación: al romper a propósito dos políticas y una vista, las pruebas fallaron |

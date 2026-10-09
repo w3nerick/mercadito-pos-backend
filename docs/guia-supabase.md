@@ -67,6 +67,10 @@ que Supabase trae de fábrica (`tests/db/supabase-stub.sql`: roles `anon`/`authe
 privilegios por defecto) y corren **todas** las migraciones y la semilla antes de cada archivo de pruebas.
 GitHub Actions hace lo mismo en cada PR.
 
+> **Versión de Postgres.** `@electric-sql/pglite` está fijado en `0.3.16` = **PostgreSQL 17.5**, la misma versión mayor
+> que Supabase (`major_version = 17` en `supabase/config.toml`). Las versiones 0.5.x de PGlite traen Postgres 18:
+> no actualizar sin revisar, o las pruebas podrían aceptar SQL que Supabase rechaza.
+
 > Si alguien tiene Docker, `supabase start && supabase db reset` también funciona y además trae el panel local.
 
 ## 8. Agregar una migración nueva

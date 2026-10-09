@@ -17,6 +17,11 @@ export function migraciones() {
 
 export async function crearBase({ semilla = true } = {}) {
   const db = new PGlite({ extensions: { btree_gist, pg_trgm } });
+  // Las pruebas deben correr en la misma versión mayor que Supabase (17).
+  const version = (await db.query('show server_version_num')).rows[0].server_version_num;
+  if (!String(version).startsWith('17')) {
+    throw new Error(`Las pruebas esperan PostgreSQL 17 (como Supabase) y PGlite trae ${version}. Ver docs/guia-supabase.md §7.`);
+  }
   await db.exec(readFileSync(join(raiz, 'tests', 'db', 'supabase-stub.sql'), 'utf8'));
   for (const archivo of migraciones()) {
     try {

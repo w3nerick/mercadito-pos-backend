@@ -89,7 +89,7 @@ Para tiempo real: suscribirse a `alarma` y `venta` con Supabase Realtime (el RLS
 
 ## 4. Para QA
 
-- `npm test` corre **81 pruebas** contra la base real (Postgres 18 en WASM): migraciones + semilla + reglas + RLS.
+- `npm test` corre **81 pruebas** contra una base real: PostgreSQL 17.5 en WASM, la misma versión mayor que Supabase (migraciones + semilla + reglas + RLS).
 - Los nombres de las pruebas llevan el ID del caso cuando existe (`CP-KDX-01`, `CP-EXI-02`, `CP-ALM-01`, `CP-COD-02`…).
 - Usuarios de demostración (sin contraseña; se enlazan con Auth): `admin.ti`, `gerente.general`, `gerente.centro`,
   `supervisor.centro`, `cajero.centro`, `cajero.norte`, `almacen.centro`, `compras`, `contador`, `auditor`.
