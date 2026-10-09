@@ -31,6 +31,11 @@ supabase db push --include-seed
 
 o pegar el contenido de `supabase/seed.sql` en **SQL Editor**. Todos los datos son ficticios.
 
+> - La semilla es para un proyecto **recién migrado**: usa ids fijos, así que correrla dos veces falla por llaves duplicadas.
+> - Fallo conocido de la CLI: `--include-seed` no aplica la semilla si no hay migraciones pendientes
+>   ([supabase/cli#4907](https://github.com/supabase/cli/issues/4907)). En ese caso, usar el SQL Editor.
+> - Nunca usar `--include-seed` en producción.
+
 ## 5. Crear usuarios de prueba y enlazarlos
 
 1. **Authentication → Users → Add user** (correo + contraseña), por ejemplo `cajero.centro@…`.
