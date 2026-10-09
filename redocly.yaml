@@ -1,0 +1,7 @@
+extends:
+  - recommended
+rules:
+  # /productos/codigo/{codigo} y /productos/{id}/... vienen así del contrato del
+  # doc 06 §5.2; no chocan porque "codigo" es un segmento literal.
+  no-ambiguous-paths: off
+  no-server-example.com: off

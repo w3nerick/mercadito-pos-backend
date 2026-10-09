@@ -1,0 +1,18 @@
+{
+  "name": "mercadito-pos-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MercaditoPOS — modelo de datos, migraciones, RLS y reportes en Supabase (PostgreSQL)",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"tests/db/*.test.mjs\"",
+    "lint:api": "npx --yes @redocly/cli@1 lint api/openapi.yaml"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
+  }
+}

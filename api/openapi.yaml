@@ -1,0 +1,982 @@
+openapi: 3.0.3
+info:
+  title: MercaditoPOS API — Catálogo, inventario, clientes y reportes
+  version: 0.1.0
+  description: |
+    Contratos de API de los módulos a cargo de la arquitectura de datos (doc 11 §5):
+    **catálogo y precios**, **existencias y kardex**, **alarmas**, **clientes y lealtad** y
+    **reportes / libro de ventas**. Los demás módulos (ventas, caja, SAR, roles) agregan sus
+    rutas a este mismo archivo.
+
+    Convenciones (doc 06 §5.1):
+    - Autenticación: `Authorization: Bearer <JWT de Supabase Auth>`. La API reenvía ese JWT a
+      Supabase para que apliquen las políticas RLS; **no** usa la llave `service_role` para
+      atender a un usuario.
+    - Fechas ISO-8601 con zona horaria (`2026-09-30T10:42:05-06:00`); montos con 2 decimales,
+      cantidades con 3.
+    - Paginación `?pagina=1&tamano=50`; respuesta con `total`, `pagina`, `tamano`, `datos`.
+    - `x-permiso`: permiso requerido (doc 10 §4). `x-implementacion`: objeto SQL que resuelve la
+      ruta (función RPC o vista de `supabase/migrations`).
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: http://localhost:3000/api/v1
+    description: API local
+security:
+  - jwt: []
+tags:
+  - name: Catálogo
+    description: Productos, códigos de barras, precios con vigencia y botones de venta rápida
+  - name: Inventario
+    description: Existencias, existencia disponible y kardex
+  - name: Alarmas
+    description: Centro de alarmas de inventario y sus reglas
+  - name: Clientes
+    description: Clientes con consentimiento, RTN, lealtad y derechos ARCO
+  - name: Reportes
+    description: Ventas, tablero, libro de ventas SAR y ventas sin factura
+
+paths:
+  /productos:
+    get:
+      tags: [Catálogo]
+      operationId: buscarProductos
+      summary: Lista o busca productos (búsqueda F2)
+      x-permiso: CATALOGO_VER
+      x-implementacion: rpc buscar_productos(p_buscar, p_id_categoria, p_id_sucursal, p_pagina, p_tamano)
+      parameters:
+        - { name: buscar, in: query, schema: { type: string }, description: 'Texto en el nombre, inicio del SKU o código exacto' }
+        - { name: categoria, in: query, schema: { type: integer } }
+        - { name: sucursal, in: query, schema: { type: integer }, description: 'Si se envía, incluye el precio vigente' }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/Tamano'
+      responses:
+        '200':
+          description: Página de productos
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginado'
+                  - type: object
+                    properties:
+                      datos:
+                        type: array
+                        items: { $ref: '#/components/schemas/ProductoResumen' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+    post:
+      tags: [Catálogo]
+      operationId: crearProducto
+      summary: Alta de producto
+      x-permiso: CATALOGO_EDITAR
+      x-implementacion: insert en producto + codigo_barras (RLS producto_crear)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoNuevo' }
+      responses:
+        '201':
+          description: Producto creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409':
+          description: SKU o código de barras duplicado (`SKU_DUPLICADO`, `CODIGO_DUPLICADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Código con dígito verificador inválido (`CODIGO_INVALIDO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /productos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdProducto'
+    get:
+      tags: [Catálogo]
+      operationId: obtenerProducto
+      summary: Detalle de un producto
+      x-permiso: CATALOGO_VER
+      x-implementacion: select de producto + codigo_barras
+      responses:
+        '200':
+          description: Producto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Catálogo]
+      operationId: editarProducto
+      summary: Edita un producto (baja lógica con `activo = false`)
+      x-permiso: CATALOGO_EDITAR
+      x-implementacion: update producto (RLS producto_editar)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoNuevo' }
+      responses:
+        '200':
+          description: Producto actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /productos/codigo/{codigo}:
+    get:
+      tags: [Catálogo]
+      operationId: productoPorCodigo
+      summary: Producto por código de barras (lo usa la caja al escanear)
+      description: Ejemplo del doc 06 §5.3.1. El precio ya incluye ISV.
+      x-permiso: CATALOGO_VER
+      x-implementacion: rpc producto_por_codigo(p_codigo, p_id_sucursal)
+      parameters:
+        - { name: codigo, in: path, required: true, schema: { type: string, example: '7421000000082' } }
+        - $ref: '#/components/parameters/SucursalRequerida'
+      responses:
+        '200':
+          description: Producto con precio, impuestos, promociones y existencia en la sucursal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductoCaja' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /productos/{id}/precios:
+    parameters:
+      - $ref: '#/components/parameters/IdProducto'
+    get:
+      tags: [Catálogo]
+      operationId: historialPrecios
+      summary: Historial de precios del producto (RF-CAT-03)
+      x-permiso: CATALOGO_VER
+      x-implementacion: select de precio
+      responses:
+        '200':
+          description: Precios con vigencia
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Precio' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+    put:
+      tags: [Catálogo]
+      operationId: programarPrecio
+      summary: Programa un precio nuevo con vigencia
+      description: |
+        Cierra la vigencia del precio anterior e inserta el nuevo en una sola transacción.
+        `idSucursal` nulo = precio general (exige PRECIO_EDITAR con alcance de empresa).
+      x-permiso: PRECIO_EDITAR
+      x-implementacion: rpc programar_precio(p_id_producto, p_id_sucursal, p_precio, p_desde, p_hasta)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [precio]
+              properties:
+                idSucursal: { type: integer, nullable: true }
+                precio: { type: number, format: double, minimum: 0.01, example: 38.0 }
+                vigenteDesde: { type: string, format: date-time }
+                vigenteHasta: { type: string, format: date-time, nullable: true }
+      responses:
+        '201':
+          description: Precio programado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  idPrecio: { type: integer }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409':
+          description: La vigencia se traslapa con otro precio programado (`PRECIO_TRASLAPADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /pos/botones:
+    get:
+      tags: [Catálogo]
+      operationId: botonesPos
+      summary: Categorías y botones de venta rápida táctil
+      x-permiso: VENTA_CREAR
+      x-implementacion: select de categoria_rapida + boton_rapido + v_existencias
+      parameters:
+        - $ref: '#/components/parameters/SucursalRequerida'
+      responses:
+        '200':
+          description: Categorías con sus botones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idCategoriaRapida: { type: integer }
+                    nombre: { type: string }
+                    color: { type: string }
+                    botones:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          idProducto: { type: integer }
+                          descripcion: { type: string }
+                          precio: { type: number }
+                          sinExistencia: { type: boolean }
+
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+  /existencias:
+    get:
+      tags: [Inventario]
+      operationId: listarExistencias
+      summary: Existencias por producto y sucursal, con estado y valuación
+      x-permiso: INVENTARIO_VER
+      x-implementacion: vista v_existencias (security_invoker)
+      parameters:
+        - { name: producto, in: query, schema: { type: integer } }
+        - { name: sucursal, in: query, schema: { type: integer } }
+        - name: estado
+          in: query
+          schema: { type: string, enum: [OK, BAJO_MINIMO, SIN_EXISTENCIA, NEGATIVA, SOBRE_MAXIMO] }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/Tamano'
+      responses:
+        '200':
+          description: Existencias
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginado'
+                  - type: object
+                    properties:
+                      datos:
+                        type: array
+                        items: { $ref: '#/components/schemas/Existencia' }
+
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+  /existencias/disponible:
+    get:
+      tags: [Inventario]
+      operationId: existenciaDisponible
+      summary: Existencia disponible para vender (y en otras sucursales)
+      description: |
+        RN-EXI-01: disponible = existencia − cantidades en ventas abiertas o suspendidas de la sucursal.
+        No cuenta lotes caducados o bloqueados. Ejemplo del doc 12 §6.
+      x-permiso: VENTA_CREAR o INVENTARIO_VER en la sucursal
+      x-implementacion: rpc existencia_disponible(p_id_producto, p_id_sucursal)
+      parameters:
+        - { name: producto, in: query, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SucursalRequerida'
+      responses:
+        '200':
+          description: Disponible
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Disponible' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /productos/{id}/kardex:
+    get:
+      tags: [Inventario]
+      operationId: kardex
+      summary: Kardex con saldo inicial, entradas, salidas y saldo final
+      x-permiso: INVENTARIO_VER
+      x-implementacion: rpc kardex(...) + rpc kardex_resumen(...)
+      parameters:
+        - $ref: '#/components/parameters/IdProducto'
+        - $ref: '#/components/parameters/SucursalRequerida'
+        - { name: desde, in: query, schema: { type: string, format: date-time } }
+        - { name: hasta, in: query, schema: { type: string, format: date-time } }
+        - name: tipo
+          in: query
+          schema:
+            type: string
+            enum: [INICIAL, COMPRA, VENTA, CANCEL_VENTA, DEVOL_CLI, DEVOL_PROV, AJUSTE, MERMA, TRANSF_SAL, TRANSF_ENT]
+        - { name: almacen, in: query, schema: { type: integer } }
+        - { name: ventasPorDia, in: query, schema: { type: boolean, default: false }, description: Acumula las ventas por día }
+      responses:
+        '200':
+          description: Kardex del periodo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resumen: { $ref: '#/components/schemas/KardexResumen' }
+                  movimientos:
+                    type: array
+                    items: { $ref: '#/components/schemas/KardexMovimiento' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /alarmas:
+    get:
+      tags: [Alarmas]
+      operationId: listarAlarmas
+      summary: Centro de alarmas
+      x-permiso: ALARMAS_VER
+      x-implementacion: vista v_alarmas (security_invoker)
+      parameters:
+        - { name: nivel, in: query, schema: { type: string, enum: [CRITICA, ADVERTENCIA, INFO] } }
+        - { name: estado, in: query, schema: { type: string, enum: [NUEVA, VISTA, EN_ATENCION, RESUELTA] } }
+        - { name: tipo, in: query, schema: { $ref: '#/components/schemas/TipoAlarma' } }
+        - { name: sucursal, in: query, schema: { type: integer } }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/Tamano'
+      responses:
+        '200':
+          description: Alarmas
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Paginado'
+                  - type: object
+                    properties:
+                      datos:
+                        type: array
+                        items: { $ref: '#/components/schemas/Alarma' }
+
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+  /alarmas/{id}:
+    put:
+      tags: [Alarmas]
+      operationId: atenderAlarma
+      summary: Cambia el estado, asigna o comenta una alarma
+      description: Resolver a mano exige comentario. Todo cambio queda en el historial.
+      x-permiso: ALARMAS_GESTIONAR
+      x-implementacion: rpc atender_alarma(p_id_alarma, p_estado, p_comentario, p_id_asignado)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [estado]
+              properties:
+                estado: { type: string, enum: [VISTA, EN_ATENCION, RESUELTA] }
+                comentario: { type: string }
+                idAsignado: { type: integer }
+      responses:
+        '200':
+          description: Alarma actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alarma' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /alarmas/reglas:
+    get:
+      tags: [Alarmas]
+      operationId: listarReglasAlarma
+      summary: Reglas de alarma
+      x-permiso: ALARMAS_VER
+      x-implementacion: select de regla_alarma
+      responses:
+        '200':
+          description: Reglas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReglaAlarma' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+    post:
+      tags: [Alarmas]
+      operationId: crearReglaAlarma
+      summary: Crea una regla (por producto, categoría, sucursal o general)
+      x-permiso: ALARMAS_REGLAS
+      x-implementacion: insert en regla_alarma
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReglaAlarma' }
+      responses:
+        '201':
+          description: Regla creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReglaAlarma' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /clientes:
+    get:
+      tags: [Clientes]
+      operationId: buscarClientes
+      summary: Busca clientes por teléfono o RTN (identificación en caja)
+      x-permiso: CLIENTE_VER
+      x-implementacion: vista v_clientes (security_invoker)
+      parameters:
+        - { name: telefono, in: query, schema: { type: string } }
+        - { name: rtn, in: query, schema: { type: string, pattern: '^[0-9]{14}$' } }
+      responses:
+        '200':
+          description: Clientes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Cliente' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+    post:
+      tags: [Clientes]
+      operationId: registrarCliente
+      summary: Registra un cliente (con consentimiento obligatorio)
+      description: Al registrarlo se crea su cuenta de lealtad con número de tarjeta.
+      x-permiso: CLIENTE_CREAR
+      x-implementacion: insert en cliente (trigger crea cuenta_lealtad)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClienteNuevo' }
+      responses:
+        '201':
+          description: Cliente registrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cliente' }
+        '409':
+          description: Teléfono ya registrado (`TELEFONO_DUPLICADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Sin consentimiento (`CONSENTIMIENTO_REQUERIDO`) o RTN inválido (`RTN_INVALIDO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /clientes/{id}/puntos:
+    get:
+      tags: [Clientes]
+      operationId: puntosCliente
+      summary: Saldo e historial de puntos (RF-CLI-04)
+      x-permiso: CLIENTE_VER
+      x-implementacion: vistas v_clientes + v_movimientos_puntos
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Puntos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  numeroTarjeta: { type: string, example: MC0000000003 }
+                  saldoPuntos: { type: integer }
+                  movimientos:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tipo: { type: string, enum: [ACUMULA, CANJE, CADUCA, AJUSTE] }
+                        puntos: { type: integer }
+                        caducaEl: { type: string, format: date, nullable: true }
+                        fecha: { type: string, format: date-time }
+                        folio: { type: string, nullable: true }
+
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+  /clientes/{id}/anonimizacion:
+    post:
+      tags: [Clientes]
+      operationId: anonimizarCliente
+      summary: Derecho de cancelación (ARCO); borra datos personales y conserva el historial
+      x-permiso: CLIENTE_DATOS_PERSONALES
+      x-implementacion: rpc anonimizar_cliente(p_id_cliente)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Cliente anonimizado }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /reportes/ventas:
+    get:
+      tags: [Reportes]
+      operationId: reporteVentas
+      summary: Ventas agrupadas (RF-REP-02)
+      x-permiso: REPORTES_VER
+      x-implementacion: rpc reporte_ventas(p_desde, p_hasta, p_agrupar, p_id_sucursal)
+      parameters:
+        - { name: desde, in: query, required: true, schema: { type: string, format: date } }
+        - { name: hasta, in: query, required: true, schema: { type: string, format: date } }
+        - name: agrupar
+          in: query
+          schema:
+            type: string
+            default: dia
+            enum: [dia, hora, sucursal, caja, cajero, categoria, producto, forma_pago]
+        - { name: sucursal, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Filas del reporte
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    clave: { type: string }
+                    etiqueta: { type: string }
+                    ventas: { type: integer }
+                    unidades: { type: number, nullable: true, description: Solo al agrupar por categoría o producto }
+                    total: { type: number }
+                    margen: { type: number, nullable: true, description: Precio sin ISV menos costo; solo por categoría o producto }
+        '400': { $ref: '#/components/responses/Invalido' }
+
+  /reportes/dashboard:
+    get:
+      tags: [Reportes]
+      operationId: dashboard
+      summary: KPIs del día y alarmas abiertas
+      x-permiso: REPORTES_VER
+      x-implementacion: rpc kpis_dashboard(p_id_sucursal, p_dia)
+      parameters:
+        - { name: sucursal, in: query, schema: { type: integer } }
+        - { name: dia, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: KPIs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Kpis' }
+
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+  /sar/libro-ventas:
+    get:
+      tags: [Reportes]
+      operationId: libroVentas
+      summary: Libro de ventas del mes (RF-SAR-12)
+      description: Las facturas anuladas aparecen con montos en cero; las notas de crédito restan.
+      x-permiso: SAR_REPORTES
+      x-implementacion: rpc libro_ventas(p_mes, p_id_sucursal)
+      parameters:
+        - { name: mes, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$', example: 2026-10 } }
+        - { name: sucursal, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Renglones del libro
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RenglonLibroVentas' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /sar/libro-ventas/resumen:
+    get:
+      tags: [Reportes]
+      operationId: resumenIsv
+      summary: Totales para la declaración mensual del ISV
+      x-permiso: SAR_REPORTES
+      x-implementacion: rpc resumen_isv(p_mes)
+      parameters:
+        - { name: mes, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' } }
+      responses:
+        '200':
+          description: Resumen
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mes: { type: string }
+                  documentos: { type: integer }
+                  anulados: { type: integer }
+                  importeExento: { type: number }
+                  importeExonerado: { type: number }
+                  gravado15: { type: number }
+                  gravado18: { type: number }
+                  isv15: { type: number }
+                  isv18: { type: number }
+                  total: { type: number }
+
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+  /sar/ventas-sin-factura:
+    get:
+      tags: [Reportes]
+      operationId: ventasSinFactura
+      summary: Tickets emitidos, canjeados y vencidos (RF-DOC-06)
+      x-permiso: SAR_REPORTES
+      x-implementacion: vista v_ventas_sin_factura (security_invoker)
+      parameters:
+        - { name: desde, in: query, schema: { type: string, format: date } }
+        - { name: hasta, in: query, schema: { type: string, format: date } }
+        - { name: sucursal, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Tickets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    numero: { type: string, example: T03-000482 }
+                    codigoCanje: { type: string }
+                    fecha: { type: string, format: date }
+                    sucursal: { type: string }
+                    folio: { type: string }
+                    total: { type: number }
+                    estado: { type: string, enum: [EMITIDO, FACTURADO, VENCIDO] }
+                    fechaLimiteCanje: { type: string, format: date }
+                    facturaCanje: { type: string, nullable: true }
+
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+components:
+  securitySchemes:
+    jwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de Supabase Auth
+
+  parameters:
+    Pagina:
+      name: pagina
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Tamano:
+      name: tamano
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    IdProducto:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    SucursalRequerida:
+      name: sucursal
+      in: query
+      required: true
+      schema: { type: integer }
+
+  responses:
+    NoAutenticado:
+      description: Token ausente o vencido
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    SinPermiso:
+      description: Sin el permiso requerido en la sucursal (`SIN_PERMISO`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NoEncontrado:
+      description: Recurso inexistente
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Invalido:
+      description: Datos inválidos
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      description: Formato uniforme de error (doc 06 §5.4)
+      required: [codigo, mensaje]
+      properties:
+        codigo: { type: string, example: SIN_PERMISO }
+        mensaje: { type: string }
+        detalles:
+          type: array
+          items:
+            type: object
+            properties:
+              campo: { type: string }
+              problema: { type: string }
+        trazaId: { type: string }
+
+    Paginado:
+      type: object
+      required: [total, pagina, tamano, datos]
+      properties:
+        total: { type: integer }
+        pagina: { type: integer }
+        tamano: { type: integer }
+        datos: { type: array, items: {} }
+
+    ClasificacionFiscal:
+      type: string
+      enum: [EXENTO, GRAVADO15, GRAVADO18]
+
+    ProductoResumen:
+      type: object
+      properties:
+        idProducto: { type: integer }
+        sku: { type: string }
+        descripcion: { type: string }
+        idCategoria: { type: integer }
+        clasificacionFiscal: { $ref: '#/components/schemas/ClasificacionFiscal' }
+        costoPromedio: { type: number }
+        precio: { type: number, nullable: true }
+
+    ProductoNuevo:
+      type: object
+      required: [sku, descripcion, idCategoria, idUnidad, clasificacionFiscal]
+      properties:
+        sku: { type: string, maxLength: 20, example: LAC-0014 }
+        descripcion: { type: string, maxLength: 120 }
+        idCategoria: { type: integer }
+        idMarca: { type: integer, nullable: true }
+        idUnidad: { type: integer }
+        clasificacionFiscal: { $ref: '#/components/schemas/ClasificacionFiscal' }
+        contenido: { type: string, nullable: true }
+        esGranel: { type: boolean, default: false }
+        controlaLote: { type: boolean, default: false }
+        restringidoEdad: { type: boolean, default: false }
+        excluidoPuntos: { type: boolean, default: false }
+        stockMinimo: { type: number, minimum: 0 }
+        puntoReorden: { type: number, minimum: 0, nullable: true }
+        stockMaximo: { type: number, minimum: 0, nullable: true }
+        activo: { type: boolean, default: true }
+        codigos:
+          type: array
+          items:
+            type: object
+            required: [codigo]
+            properties:
+              codigo: { type: string, example: '7421000000013' }
+              tipo: { type: string, enum: [EAN13, EAN8, UPC, INTERNO, PESO_VARIABLE], default: EAN13 }
+              factor: { type: number, default: 1 }
+
+    Producto:
+      allOf:
+        - $ref: '#/components/schemas/ProductoNuevo'
+        - type: object
+          properties:
+            idProducto: { type: integer }
+            costoPromedio: { type: number }
+            creado: { type: string, format: date-time }
+            actualizado: { type: string, format: date-time }
+
+    ProductoCaja:
+      type: object
+      properties:
+        idProducto: { type: integer, example: 12 }
+        sku: { type: string, example: BEB-0102 }
+        descripcion: { type: string, example: Refresco cola 2 L }
+        unidad: { type: string, example: PZA }
+        esGranel: { type: boolean }
+        factor: { type: number, example: 1 }
+        precio: { type: number, example: 38.0 }
+        clasificacionFiscal: { $ref: '#/components/schemas/ClasificacionFiscal' }
+        impuestos:
+          type: array
+          items:
+            type: object
+            properties:
+              nombre: { type: string, example: ISV }
+              tasa: { type: number, example: 0.15 }
+        restringidoEdad: { type: boolean }
+        promocionesVigentes:
+          type: array
+          items:
+            type: object
+            properties:
+              idPromocion: { type: integer }
+              tipo: { type: string, example: NxM }
+              valor: { type: number, nullable: true }
+              n: { type: integer, nullable: true }
+              m: { type: integer, nullable: true }
+        existenciaSucursal: { type: number, example: 142.0 }
+
+    Precio:
+      type: object
+      properties:
+        idPrecio: { type: integer }
+        idSucursal: { type: integer, nullable: true }
+        precioVenta: { type: number }
+        vigenteDesde: { type: string, format: date-time }
+        vigenteHasta: { type: string, format: date-time, nullable: true }
+        idUsuarioCambio: { type: integer }
+
+    Existencia:
+      type: object
+      properties:
+        idProducto: { type: integer }
+        sku: { type: string }
+        descripcion: { type: string }
+        categoria: { type: string }
+        idSucursal: { type: integer }
+        sucursal: { type: string }
+        cantidad: { type: number }
+        stockMinimo: { type: number }
+        stockMaximo: { type: number, nullable: true }
+        costoPromedio: { type: number }
+        valor: { type: number }
+        estado: { type: string, enum: [OK, BAJO_MINIMO, SIN_EXISTENCIA, NEGATIVA, SOBRE_MAXIMO] }
+
+    Disponible:
+      type: object
+      properties:
+        idProducto: { type: integer, example: 9 }
+        producto: { type: string, example: Pan integral }
+        disponible: { type: number, example: 0 }
+        minimo: { type: number, example: 12 }
+        permiteNegativo: { type: boolean, example: false }
+        otrasSucursales:
+          type: array
+          items:
+            type: object
+            properties:
+              idSucursal: { type: integer }
+              sucursal: { type: string, example: Norte }
+              disponible: { type: number, example: 14 }
+
+    KardexResumen:
+      type: object
+      properties:
+        saldoInicial: { type: number, example: 42 }
+        entradas: { type: number, example: 96 }
+        salidas: { type: number, example: 130 }
+        saldoFinal: { type: number, example: 8 }
+        costoPromedio: { type: number }
+        valorFinal: { type: number }
+
+    KardexMovimiento:
+      type: object
+      properties:
+        fecha: { type: string, format: date-time }
+        tipo: { type: string }
+        documentoOrigen: { type: string, example: 'recepcion:12' }
+        numeroLote: { type: string, nullable: true }
+        usuario: { type: string, nullable: true }
+        entrada: { type: number, nullable: true }
+        salida: { type: number, nullable: true }
+        saldo: { type: number }
+        costoUnitario: { type: number }
+        costoPromedio: { type: number }
+        valorSaldo: { type: number }
+
+    TipoAlarma:
+      type: string
+      enum: [SIN_EXISTENCIA, NEGATIVA, CADUCADO, BAJO_MINIMO, REORDEN, POR_CADUCAR, MERMA_ALTA, DIF_CONTEO, SOBRE_MAXIMO, SIN_MOVIMIENTO]
+
+    Alarma:
+      type: object
+      properties:
+        idAlarma: { type: integer }
+        tipo: { $ref: '#/components/schemas/TipoAlarma' }
+        nivel: { type: string, enum: [CRITICA, ADVERTENCIA, INFO] }
+        estado: { type: string, enum: [NUEVA, VISTA, EN_ATENCION, RESUELTA] }
+        valorActual: { type: number, nullable: true }
+        origen: { type: string }
+        idProducto: { type: integer }
+        producto: { type: string }
+        idSucursal: { type: integer }
+        sucursal: { type: string }
+        numeroLote: { type: string, nullable: true }
+        fechaCaducidad: { type: string, format: date, nullable: true }
+        rolResponsable: { type: string, nullable: true }
+        idAsignado: { type: integer, nullable: true }
+        creada: { type: string, format: date-time }
+        resuelta: { type: string, format: date-time, nullable: true }
+
+    ReglaAlarma:
+      type: object
+      required: [tipo, nivel]
+      properties:
+        idRegla: { type: integer, readOnly: true }
+        tipo: { $ref: '#/components/schemas/TipoAlarma' }
+        alcance: { type: string, enum: [PRODUCTO, CATEGORIA, SUCURSAL, GENERAL], default: GENERAL }
+        idAlcance: { type: integer, nullable: true }
+        umbral: { type: number, nullable: true }
+        dias: { type: integer, nullable: true }
+        nivel: { type: string, enum: [CRITICA, ADVERTENCIA, INFO] }
+        idRolResponsable: { type: integer, nullable: true }
+        minutosRecordatorio: { type: integer, default: 120 }
+        activa: { type: boolean, default: true }
+
+    ClienteNuevo:
+      type: object
+      required: [nombre, telefono, consentimientoDatos]
+      properties:
+        nombre: { type: string, maxLength: 120 }
+        telefono: { type: string, pattern: '^[0-9+]{8,15}$' }
+        correo: { type: string, format: email, nullable: true }
+        fechaNacimiento: { type: string, format: date, nullable: true }
+        rtn: { type: string, pattern: '^[0-9]{14}$', nullable: true }
+        razonSocial: { type: string, nullable: true, description: Obligatoria si se envía RTN }
+        consentimientoDatos: { type: boolean, enum: [true], description: Debe ser verdadero (RF-CLI-01) }
+
+    Cliente:
+      type: object
+      properties:
+        idCliente: { type: integer }
+        nombre: { type: string }
+        telefono: { type: string }
+        correo: { type: string, nullable: true }
+        rtn: { type: string, nullable: true }
+        razonSocial: { type: string, nullable: true }
+        activo: { type: boolean }
+        numeroTarjeta: { type: string }
+        saldoPuntos: { type: integer }
+        nivel: { type: string }
+        ultimaCompra: { type: string, format: date-time, nullable: true }
+
+    Kpis:
+      type: object
+      properties:
+        dia: { type: string, format: date }
+        ventas: { type: integer }
+        total: { type: number }
+        ticketPromedio: { type: number }
+        impuestos: { type: number }
+        ventasSinFactura: { type: integer }
+        margenBruto: { type: number }
+        alarmas:
+          type: object
+          properties:
+            criticas: { type: integer }
+            advertencias: { type: integer }
+        topProductos:
+          type: array
+          items:
+            type: object
+            properties:
+              descripcion: { type: string }
+              unidades: { type: number }
+              total: { type: number }
+
+    RenglonLibroVentas:
+      type: object
+      properties:
+        fecha: { type: string, format: date }
+        tipoDocumento: { type: string, example: '01' }
+        numero: { type: string, example: 000-003-01-00012520 }
+        cai: { type: string }
+        rtnComprador: { type: string }
+        nombreComprador: { type: string }
+        estado: { type: string, enum: [VIGENTE, ANULADO] }
+        importeExento: { type: number }
+        importeExonerado: { type: number }
+        importeGravado15: { type: number }
+        importeGravado18: { type: number }
+        isv15: { type: number }
+        isv18: { type: number }
+        total: { type: number }
